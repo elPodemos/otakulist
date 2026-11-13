@@ -1,0 +1,2 @@
+[functions.tmdb-localize]
+verify_jwt = false
