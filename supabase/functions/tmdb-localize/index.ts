@@ -160,7 +160,7 @@ Deno.serve(async (request: Request) => {
 	if (!title) return jsonResponse({ error: "Le titre de l’anime est requis." }, 400, origin);
 	const aliases = Array.isArray(input.aliases)
 		? input.aliases
-			.filter((value): value is string => typeof value === "string" && value.trim())
+			.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
 			.map((value) => value.trim().slice(0, 200))
 			.slice(0, 10)
 		: [];
