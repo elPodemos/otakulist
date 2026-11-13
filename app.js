@@ -1,5 +1,8 @@
 const STORAGE_KEY = "otakulist-anime-v1";
 const API_URL = "https://kitsu.io/api/edge/anime";
+const SUPABASE_URL = window.OTAKULIST_CONFIG?.supabaseUrl?.replace(/\/+$/, "");
+const SUPABASE_ANON_KEY = window.OTAKULIST_CONFIG?.supabaseAnonKey;
+const hasSharedStorage = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 const STATUS_LABELS = {
 	planned: "À voir",
 	watching: "En cours",
@@ -14,25 +17,171 @@ const searchForm = document.querySelector("#search-form");
 const searchInput = document.querySelector("#anime-query");
 const searchSubmit = document.querySelector("#search-submit");
 const searchResults = document.querySelector("#search-results");
+const syncStatus = document.querySelector("#sync-status");
+const importLocalButton = document.querySelector("#import-local");
+const retrySyncButton = document.querySelector("#retry-sync");
 
-let animeList = loadAnimeList();
+const localAnimeList = loadAnimeList();
+let animeList = hasSharedStorage ? [] : localAnimeList;
 let activeFilter = "all";
 let searchAnimeResults = [];
 let searchRequestId = 0;
+let remoteUpdatedAt = null;
+let pendingWrites = 0;
+let writeQueue = Promise.resolve();
+let sharedStorageReady = false;
+let localRevision = 0;
+let localChangesPending = false;
 
 function loadAnimeList() {
 	try {
 		const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-		return Array.isArray(saved)
-			? saved.filter((anime) => anime && (Number.isInteger(anime.id) || typeof anime.id === "string") && anime.title && STATUS_LABELS[anime.status])
-			: [];
+		return Array.isArray(saved) ? saved.filter(isValidAnime) : [];
 	} catch {
 		return [];
 	}
 }
 
+function setSyncStatus(message, state) {
+	syncStatus.textContent = message;
+	syncStatus.dataset.state = state;
+}
+
+function setCollectionEnabled(enabled) {
+	document.querySelectorAll(
+		".collection-toolbar button, .filter-tabs button, #search-form input, #search-form button, #close-search, .remove-button, .status-select, .result-add, .empty-add",
+	).forEach((control) => { control.disabled = !enabled; });
+}
+
 function saveAnimeList() {
 	localStorage.setItem(STORAGE_KEY, JSON.stringify(animeList));
+	localRevision += 1;
+	if (!hasSharedStorage) return;
+	importLocalButton.hidden = true;
+	localChangesPending = true;
+	if (!sharedStorageReady) {
+		setSyncStatus("Stockage partagé indisponible : changements enregistrés sur cet appareil.", "error");
+		return;
+	}
+
+	const snapshot = animeList.map((anime) => ({ ...anime }));
+	const revision = localRevision;
+	pendingWrites += 1;
+	setSyncStatus("Enregistrement des modifications...", "pending");
+	retrySyncButton.hidden = true;
+	writeQueue = writeQueue.then(async () => {
+		try {
+			const response = await fetch(
+				`${SUPABASE_URL}/rest/v1/otaku_collection?id=eq.1&select=updated_at`,
+				{
+					method: "PATCH",
+					headers: {
+						apikey: SUPABASE_ANON_KEY,
+						"Content-Type": "application/json",
+						Prefer: "return=representation",
+					},
+					body: JSON.stringify({ anime_list: snapshot }),
+				},
+			);
+			if (!response.ok) throw new Error(`Erreur du stockage partagé (${response.status}).`);
+			const updatedRows = await response.json();
+			if (updatedRows.length !== 1) throw new Error("La liste partagée n'a pas pu être mise à jour.");
+			remoteUpdatedAt = updatedRows[0].updated_at;
+			if (localRevision === revision) localChangesPending = false;
+		} catch (error) {
+			setSyncStatus(`${error.message} Vos changements restent sur cet appareil.`, "error");
+			retrySyncButton.hidden = false;
+		} finally {
+			pendingWrites -= 1;
+			if (pendingWrites === 0 && remoteUpdatedAt && !localChangesPending) {
+				setSyncStatus("Liste synchronisée entre appareils.", "success");
+			}
+		}
+	});
+}
+
+function sharedStorageHeaders() {
+	return { apikey: SUPABASE_ANON_KEY };
+}
+
+async function loadSharedAnimeList() {
+	const response = await fetch(
+		`${SUPABASE_URL}/rest/v1/otaku_collection?id=eq.1&select=anime_list,updated_at`,
+		{ headers: sharedStorageHeaders() },
+	);
+	if (!response.ok) throw new Error(`Erreur du stockage partagé (${response.status}).`);
+	const rows = await response.json();
+	if (rows.length !== 1 || !Array.isArray(rows[0].anime_list)) {
+		throw new Error("La liste partagée n'est pas encore initialisée.");
+	}
+	return rows[0];
+}
+
+async function refreshSharedAnimeList() {
+	if (!hasSharedStorage || pendingWrites > 0 || localChangesPending) return;
+	const revision = localRevision;
+	try {
+		const sharedList = await loadSharedAnimeList();
+		if (revision !== localRevision) return;
+		if (!remoteUpdatedAt || Date.parse(sharedList.updated_at) > Date.parse(remoteUpdatedAt)) {
+			animeList = sharedList.anime_list.filter(isValidAnime);
+			remoteUpdatedAt = sharedList.updated_at;
+			localStorage.setItem(STORAGE_KEY, JSON.stringify(animeList));
+			renderList();
+			if (animeList.length > 0) importLocalButton.hidden = true;
+		}
+		setSyncStatus("Liste synchronisée entre appareils.", "success");
+		retrySyncButton.hidden = true;
+	} catch (error) {
+		setSyncStatus(`${error.message} Vérifiez la configuration Supabase.`, "error");
+		retrySyncButton.hidden = false;
+	}
+}
+
+function isValidAnime(anime) {
+	return anime && (Number.isInteger(anime.id) || typeof anime.id === "string")
+		&& typeof anime.title === "string" && anime.title.length > 0 && anime.title.length <= 500
+		&& typeof anime.status === "string" && STATUS_LABELS[anime.status];
+}
+
+async function initializeStorage() {
+	if (!hasSharedStorage) {
+		setSyncStatus("Données enregistrées sur cet appareil uniquement.", "error");
+		renderList();
+		return;
+	}
+
+	const hadPendingChanges = localChangesPending;
+	const localListToImport = loadAnimeList();
+	setCollectionEnabled(false);
+	setSyncStatus("Connexion à la liste partagée...", "pending");
+	try {
+		const sharedList = await loadSharedAnimeList();
+		animeList = sharedList.anime_list.filter(isValidAnime);
+		remoteUpdatedAt = sharedList.updated_at;
+		sharedStorageReady = true;
+		localChangesPending = hadPendingChanges;
+		if (!hadPendingChanges && (animeList.length > 0 || localListToImport.length === 0)) {
+			localStorage.setItem(STORAGE_KEY, JSON.stringify(animeList));
+		}
+		renderList();
+		if (hadPendingChanges) {
+			setSyncStatus("Des changements locaux ne sont pas synchronisés. Importez-les pour remplacer la liste partagée.", "error");
+			importLocalButton.hidden = false;
+		} else {
+			setSyncStatus("Liste synchronisée entre appareils.", "success");
+			importLocalButton.hidden = !(animeList.length === 0 && localListToImport.length > 0);
+		}
+		retrySyncButton.hidden = true;
+		window.setInterval(refreshSharedAnimeList, 10000);
+	} catch (error) {
+		animeList = loadAnimeList();
+		renderList();
+		setSyncStatus(`${error.message} Modifications locales uniquement.`, "error");
+		retrySyncButton.hidden = false;
+	} finally {
+		setCollectionEnabled(true);
+	}
 }
 
 function makeElement(tag, className, text) {
@@ -261,4 +410,21 @@ document.querySelectorAll("[data-filter]").forEach((button) => {
 document.querySelectorAll(".empty-add, #open-search").forEach((button) => button.addEventListener("click", openSearch));
 document.querySelector("#close-search").addEventListener("click", () => { searchPanel.hidden = true; });
 
-renderList();
+importLocalButton.addEventListener("click", () => {
+	animeList = loadAnimeList();
+	importLocalButton.hidden = true;
+	renderList();
+	saveAnimeList();
+});
+
+retrySyncButton.addEventListener("click", () => {
+	if (!sharedStorageReady) {
+		initializeStorage();
+	} else if (localChangesPending) {
+		saveAnimeList();
+	} else {
+		refreshSharedAnimeList();
+	}
+});
+
+initializeStorage();

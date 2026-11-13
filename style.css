@@ -97,6 +97,11 @@ h1 { margin-bottom: 8px; font-family: "Space Grotesk", sans-serif; font-size: 54
 .result-add:hover { background: var(--orange); color: white; }
 .result-add:disabled { border-color: #d7e8dc; background: #edf5ef; color: var(--green); cursor: default; }
 .footer { min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--line); color: #92948d; font-size: 8px; font-weight: 700; letter-spacing: 0.8px; }
+.storage-info { display: flex; align-items: center; gap: 12px; }
+#sync-status[data-state="error"] { color: var(--orange-dark); }
+#sync-status[data-state="success"] { color: var(--green); }
+.import-button { padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 600; letter-spacing: 0; }
+.import-button:hover { border-color: var(--orange); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 [hidden] { display: none !important; }
 @keyframes rise-in { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
@@ -129,6 +134,7 @@ h1 { margin-bottom: 8px; font-family: "Space Grotesk", sans-serif; font-size: 54
 	.search-form { gap: 7px; padding-left: 9px; }
 	.search-form button { padding: 0 9px; font-size: 10px; }
 	.search-results { grid-template-columns: 1fr; }
-	.footer { align-items: flex-start; flex-direction: column; justify-content: center; gap: 6px; padding: 13px 0; }
+	.footer { align-items: flex-start; flex-direction: column; justify-content: center; gap: 8px; padding: 13px 0; }
+	.storage-info { align-items: flex-start; flex-direction: column; gap: 7px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
