@@ -1,8 +1,8 @@
-const STORAGE_KEY = "otakulist-anime-v1";
 const API_URL = "https://kitsu.io/api/edge/anime";
 const SUPABASE_URL = window.OTAKULIST_CONFIG?.supabaseUrl?.replace(/\/+$/, "");
 const SUPABASE_ANON_KEY = window.OTAKULIST_CONFIG?.supabaseAnonKey;
-const hasSharedStorage = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+const SESSION_KEY = "otakulist-auth-session-v1";
+const COLLECTIONS_URL = `${SUPABASE_URL}/rest/v1/user_anime_lists`;
 const STATUS_LABELS = {
 	planned: "À voir",
 	watching: "En cours",
@@ -18,123 +18,107 @@ const searchInput = document.querySelector("#anime-query");
 const searchSubmit = document.querySelector("#search-submit");
 const searchResults = document.querySelector("#search-results");
 const syncStatus = document.querySelector("#sync-status");
-const importLocalButton = document.querySelector("#import-local");
 const retrySyncButton = document.querySelector("#retry-sync");
+const authToggle = document.querySelector("#auth-toggle");
+const loginPanel = document.querySelector("#login-panel");
+const loginForm = document.querySelector("#login-form");
+const loginSubmit = document.querySelector("#login-submit");
+const recoveryRequestForm = document.querySelector("#recovery-request-form");
+const recoveryRequestSubmit = document.querySelector("#recovery-request-submit");
+const recoveryUpdateForm = document.querySelector("#recovery-update-form");
+const recoveryUpdateSubmit = document.querySelector("#recovery-update-submit");
+const backToLoginFromUpdate = document.querySelector("#back-to-login-from-update");
+const authMessage = document.querySelector("#auth-message");
+const listPicker = document.querySelector("#list-picker");
+const listSelect = document.querySelector("#list-select");
+const listPermission = document.querySelector("#list-permission");
+const noAccounts = document.querySelector("#no-accounts");
+const openSearchButton = document.querySelector("#open-search");
+const introCopy = document.querySelector("#intro-copy");
 
-const localAnimeList = loadAnimeList();
-let animeList = hasSharedStorage ? [] : localAnimeList;
+let collections = [];
+let selectedOwnerId = null;
+let animeList = [];
+let authSession = null;
 let activeFilter = "all";
 let searchAnimeResults = [];
 let searchRequestId = 0;
-let remoteUpdatedAt = null;
 let pendingWrites = 0;
 let writeQueue = Promise.resolve();
-let sharedStorageReady = false;
-let localRevision = 0;
-let localChangesPending = false;
-
-function loadAnimeList() {
-	try {
-		const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-		return Array.isArray(saved) ? saved.filter(isValidAnime) : [];
-	} catch {
-		return [];
-	}
-}
+let loginPanelOpen = false;
+let authView = "login";
+let recoverySession = null;
 
 function setSyncStatus(message, state) {
 	syncStatus.textContent = message;
 	syncStatus.dataset.state = state;
 }
 
-function setCollectionEnabled(enabled) {
-	document.querySelectorAll(
-		".collection-toolbar button, .filter-tabs button, #search-form input, #search-form button, #close-search, .remove-button, .status-select, .result-add, .empty-add",
-	).forEach((control) => { control.disabled = !enabled; });
+function canEditSelectedList() {
+	return Boolean(authSession?.user?.id && selectedOwnerId === authSession.user.id);
 }
 
-function saveAnimeList() {
-	localStorage.setItem(STORAGE_KEY, JSON.stringify(animeList));
-	localRevision += 1;
-	if (!hasSharedStorage) return;
-	importLocalButton.hidden = true;
-	localChangesPending = true;
-	if (!sharedStorageReady) {
-		setSyncStatus("Stockage partagé indisponible : changements enregistrés sur cet appareil.", "error");
-		return;
+function apiHeaders({ json = false, authenticated = false } = {}) {
+	const headers = { apikey: SUPABASE_ANON_KEY };
+	if (json) headers["Content-Type"] = "application/json";
+	if (authenticated && authSession?.access_token) {
+		headers.Authorization = "Bearer " + authSession.access_token;
 	}
-
-	const snapshot = animeList.map((anime) => ({ ...anime }));
-	const revision = localRevision;
-	pendingWrites += 1;
-	setSyncStatus("Enregistrement des modifications...", "pending");
-	retrySyncButton.hidden = true;
-	writeQueue = writeQueue.then(async () => {
-		try {
-			const response = await fetch(
-				`${SUPABASE_URL}/rest/v1/otaku_collection?id=eq.1&select=updated_at`,
-				{
-					method: "PATCH",
-					headers: {
-						apikey: SUPABASE_ANON_KEY,
-						"Content-Type": "application/json",
-						Prefer: "return=representation",
-					},
-					body: JSON.stringify({ anime_list: snapshot }),
-				},
-			);
-			if (!response.ok) throw new Error(`Erreur du stockage partagé (${response.status}).`);
-			const updatedRows = await response.json();
-			if (updatedRows.length !== 1) throw new Error("La liste partagée n'a pas pu être mise à jour.");
-			remoteUpdatedAt = updatedRows[0].updated_at;
-			if (localRevision === revision) localChangesPending = false;
-		} catch (error) {
-			setSyncStatus(`${error.message} Vos changements restent sur cet appareil.`, "error");
-			retrySyncButton.hidden = false;
-		} finally {
-			pendingWrites -= 1;
-			if (pendingWrites === 0 && remoteUpdatedAt && !localChangesPending) {
-				setSyncStatus("Liste synchronisée entre appareils.", "success");
-			}
-		}
-	});
+	return headers;
 }
 
-function sharedStorageHeaders() {
-	return { apikey: SUPABASE_ANON_KEY };
-}
-
-async function loadSharedAnimeList() {
-	const response = await fetch(
-		`${SUPABASE_URL}/rest/v1/otaku_collection?id=eq.1&select=anime_list,updated_at`,
-		{ headers: sharedStorageHeaders() },
-	);
-	if (!response.ok) throw new Error(`Erreur du stockage partagé (${response.status}).`);
-	const rows = await response.json();
-	if (rows.length !== 1 || !Array.isArray(rows[0].anime_list)) {
-		throw new Error("La liste partagée n'est pas encore initialisée.");
-	}
-	return rows[0];
-}
-
-async function refreshSharedAnimeList() {
-	if (!hasSharedStorage || pendingWrites > 0 || localChangesPending) return;
-	const revision = localRevision;
+async function responseError(response, fallback) {
+	let detail = "";
 	try {
-		const sharedList = await loadSharedAnimeList();
-		if (revision !== localRevision) return;
-		if (!remoteUpdatedAt || Date.parse(sharedList.updated_at) > Date.parse(remoteUpdatedAt)) {
-			animeList = sharedList.anime_list.filter(isValidAnime);
-			remoteUpdatedAt = sharedList.updated_at;
-			localStorage.setItem(STORAGE_KEY, JSON.stringify(animeList));
-			renderList();
-			if (animeList.length > 0) importLocalButton.hidden = true;
+		const payload = await response.json();
+		detail = payload.msg || payload.message || payload.error_description || payload.error || "";
+	} catch {
+		detail = "";
+	}
+	return new Error(detail || `${fallback} (${response.status}).`);
+}
+
+function persistSession() {
+	if (authSession) localStorage.setItem(SESSION_KEY, JSON.stringify(authSession));
+	else localStorage.removeItem(SESSION_KEY);
+}
+
+async function renewSession(refreshToken) {
+	const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+		method: "POST",
+		headers: apiHeaders({ json: true }),
+		body: JSON.stringify({ refresh_token: refreshToken }),
+	});
+	if (!response.ok) throw await responseError(response, "Impossible de renouveler la session");
+	const session = await response.json();
+	authSession = { ...session, expires_at: Date.now() + session.expires_in * 1000 };
+	persistSession();
+}
+
+async function ensureSessionValid() {
+	if (!authSession || authSession.expires_at > Date.now() + 60000) return;
+	await renewSession(authSession.refresh_token);
+}
+
+async function restoreSession() {
+	try {
+		const stored = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+		if (!stored?.access_token || !stored?.refresh_token) return;
+		authSession = stored;
+		if (!stored.expires_at || stored.expires_at <= Date.now() + 60000) {
+			await renewSession(stored.refresh_token);
+		} else {
+			const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+				headers: apiHeaders({ authenticated: true }),
+			});
+			if (!response.ok) throw await responseError(response, "Session invalide");
+			authSession.user = await response.json();
+			persistSession();
 		}
-		setSyncStatus("Liste synchronisée entre appareils.", "success");
-		retrySyncButton.hidden = true;
 	} catch (error) {
-		setSyncStatus(`${error.message} Vérifiez la configuration Supabase.`, "error");
-		retrySyncButton.hidden = false;
+		authSession = null;
+		persistSession();
+		authMessage.textContent = `Session expirée. ${error.message}`;
 	}
 }
 
@@ -144,44 +128,203 @@ function isValidAnime(anime) {
 		&& typeof anime.status === "string" && STATUS_LABELS[anime.status];
 }
 
-async function initializeStorage() {
-	if (!hasSharedStorage) {
-		setSyncStatus("Données enregistrées sur cet appareil uniquement.", "error");
-		renderList();
-		return;
+async function loadCollections() {
+	await ensureSessionValid();
+	const response = await fetch(
+		`${COLLECTIONS_URL}?select=owner_id,display_name,anime_list,updated_at&order=display_name.asc`,
+		{ headers: apiHeaders({ authenticated: true }) },
+	);
+	if (!response.ok) throw await responseError(response, "Impossible de charger les listes");
+	const rows = await response.json();
+	collections = rows.filter((entry) => entry.owner_id && entry.display_name && Array.isArray(entry.anime_list))
+		.map((entry) => ({ ...entry, anime_list: entry.anime_list.filter(isValidAnime) }));
+	if (!collections.some((entry) => entry.owner_id === selectedOwnerId)) {
+		selectedOwnerId = collections.some((entry) => entry.owner_id === authSession?.user?.id)
+			? authSession.user.id
+			: collections[0]?.owner_id || null;
+	}
+	animeList = collections.find((entry) => entry.owner_id === selectedOwnerId)?.anime_list || [];
+	renderList();
+	const hasOwnList = collections.some((entry) => entry.owner_id === authSession?.user?.id);
+	if (authSession && !hasOwnList) {
+		setSyncStatus("Votre compte n’a pas encore de liste configurée. Contactez l’administrateur.", "error");
+	} else {
+		setSyncStatus(authSession ? "Listes synchronisées." : "Listes publiques en lecture seule.", "success");
+	}
+	retrySyncButton.hidden = true;
+}
+
+async function refreshCollections() {
+	if (pendingWrites > 0) return;
+	try {
+		await loadCollections();
+	} catch (error) {
+		setSyncStatus(error.message, "error");
+		retrySyncButton.hidden = false;
+	}
+}
+
+function saveAnimeList() {
+	if (!canEditSelectedList()) return;
+	const snapshot = animeList.map((anime) => ({ ...anime }));
+	const ownerId = selectedOwnerId;
+	pendingWrites += 1;
+	setSyncStatus("Enregistrement de votre liste...", "pending");
+	retrySyncButton.hidden = true;
+	writeQueue = writeQueue.then(async () => {
+		try {
+			await ensureSessionValid();
+			const response = await fetch(
+				`${COLLECTIONS_URL}?owner_id=eq.${encodeURIComponent(ownerId)}&select=owner_id,updated_at`,
+				{
+					method: "PATCH",
+					headers: { ...apiHeaders({ json: true, authenticated: true }), Prefer: "return=representation" },
+					body: JSON.stringify({ anime_list: snapshot }),
+				},
+			);
+			if (!response.ok) throw await responseError(response, "Impossible d’enregistrer la liste");
+			const updatedRows = await response.json();
+			if (updatedRows.length !== 1) throw new Error("Aucune liste personnelle n’a été mise à jour.");
+			const current = collections.find((entry) => entry.owner_id === ownerId);
+			if (current) {
+				current.anime_list = snapshot;
+				current.updated_at = updatedRows[0].updated_at;
+			}
+			if (selectedOwnerId === ownerId) setSyncStatus("Votre liste est enregistrée.", "success");
+		} catch (error) {
+			setSyncStatus(error.message, "error");
+			retrySyncButton.hidden = false;
+		} finally {
+			pendingWrites -= 1;
+		}
+	});
+}
+
+async function signIn(email, password) {
+	const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+		method: "POST",
+		headers: apiHeaders({ json: true }),
+		body: JSON.stringify({ email, password }),
+	});
+	if (!response.ok) throw await responseError(response, "Connexion impossible");
+	const session = await response.json();
+	authSession = { ...session, expires_at: Date.now() + session.expires_in * 1000 };
+	persistSession();
+	selectedOwnerId = authSession.user.id;
+	loginPanelOpen = false;
+	loginForm.hidden = true;
+	authMessage.textContent = "";
+	updateAccountControls();
+	await loadCollections();
+}
+
+async function requestPasswordRecovery(email) {
+	const redirectTo = `${window.location.origin}${window.location.pathname}`;
+	const response = await fetch(
+		`${SUPABASE_URL}/auth/v1/recover?redirect_to=${encodeURIComponent(redirectTo)}`,
+		{
+			method: "POST",
+			headers: apiHeaders({ json: true }),
+			body: JSON.stringify({ email }),
+		},
+	);
+	if (!response.ok) throw await responseError(response, "Impossible d’envoyer le lien de récupération");
+}
+
+function consumeRecoveryRedirect() {
+	const params = new URLSearchParams(window.location.hash.slice(1));
+	const type = params.get("type");
+	const errorCode = params.get("error_code");
+	if (type !== "recovery" && !errorCode) return false;
+
+	window.history.replaceState(null, document.title, window.location.pathname + window.location.search);
+	loginPanelOpen = true;
+	if (errorCode) {
+		authView = "request";
+		authMessage.textContent = errorCode === "otp_expired"
+			? "Ce lien a expiré ou a déjà été utilisé. Demandez-en un nouveau."
+			: params.get("error_description") || "Le lien de récupération est invalide.";
+		return true;
 	}
 
-	const hadPendingChanges = localChangesPending;
-	const localListToImport = loadAnimeList();
-	setCollectionEnabled(false);
-	setSyncStatus("Connexion à la liste partagée...", "pending");
-	try {
-		const sharedList = await loadSharedAnimeList();
-		animeList = sharedList.anime_list.filter(isValidAnime);
-		remoteUpdatedAt = sharedList.updated_at;
-		sharedStorageReady = true;
-		localChangesPending = hadPendingChanges;
-		if (!hadPendingChanges && (animeList.length > 0 || localListToImport.length === 0)) {
-			localStorage.setItem(STORAGE_KEY, JSON.stringify(animeList));
-		}
-		renderList();
-		if (hadPendingChanges) {
-			setSyncStatus("Des changements locaux ne sont pas synchronisés. Importez-les pour remplacer la liste partagée.", "error");
-			importLocalButton.hidden = false;
-		} else {
-			setSyncStatus("Liste synchronisée entre appareils.", "success");
-			importLocalButton.hidden = !(animeList.length === 0 && localListToImport.length > 0);
-		}
-		retrySyncButton.hidden = true;
-		window.setInterval(refreshSharedAnimeList, 10000);
-	} catch (error) {
-		animeList = loadAnimeList();
-		renderList();
-		setSyncStatus(`${error.message} Modifications locales uniquement.`, "error");
-		retrySyncButton.hidden = false;
-	} finally {
-		setCollectionEnabled(true);
+	const accessToken = params.get("access_token");
+	const refreshToken = params.get("refresh_token");
+	if (!accessToken || !refreshToken) {
+		authView = "request";
+		authMessage.textContent = "Le lien de récupération est incomplet. Demandez-en un nouveau.";
+		return true;
 	}
+
+	recoverySession = {
+		access_token: accessToken,
+		refresh_token: refreshToken,
+		token_type: params.get("token_type") || "bearer",
+		expires_in: Number(params.get("expires_in")) || 3600,
+	};
+	authView = "update";
+	authMessage.textContent = "Choisissez votre nouveau mot de passe.";
+	return true;
+}
+
+async function updateRecoveredPassword(password) {
+	if (!recoverySession?.access_token) throw new Error("Votre lien de récupération n’est plus valide. Demandez-en un nouveau.");
+	const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+		method: "PUT",
+		headers: {
+			...apiHeaders({ json: true }),
+			Authorization: `Bearer ${recoverySession.access_token}`,
+		},
+		body: JSON.stringify({ password }),
+	});
+	if (!response.ok) throw await responseError(response, "Impossible de modifier le mot de passe");
+	const user = await response.json();
+	authSession = {
+		...recoverySession,
+		user,
+		expires_at: Date.now() + recoverySession.expires_in * 1000,
+	};
+	recoverySession = null;
+	persistSession();
+	authMessage.textContent = "Mot de passe modifié. Vous êtes connecté.";
+	updateAccountControls();
+	await loadCollections();
+}
+
+function signOut() {
+	authSession = null;
+	persistSession();
+	selectedOwnerId = collections[0]?.owner_id || null;
+	animeList = collections[0]?.anime_list || [];
+	loginPanelOpen = false;
+	loginForm.hidden = true;
+	authMessage.textContent = "";
+	authView = "login";
+	recoverySession = null;
+	updateAccountControls();
+	renderList();
+	setSyncStatus("Déconnecté. Listes publiques en lecture seule.", "success");
+	void refreshCollections();
+}
+
+function updateAccountControls() {
+	authToggle.textContent = authSession ? "Se déconnecter" : "Se connecter";
+	loginPanel.hidden = Boolean(authSession) || !loginPanelOpen;
+	loginForm.hidden = authView !== "login";
+	recoveryRequestForm.hidden = authView !== "request";
+	recoveryUpdateForm.hidden = authView !== "update";
+	backToLoginFromUpdate.hidden = authView !== "update";
+}
+
+async function initializeStorage() {
+	if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+		setSyncStatus("Configuration du stockage indisponible.", "error");
+		return;
+	}
+	const isRecoveryRedirect = consumeRecoveryRedirect();
+	if (!isRecoveryRedirect) await restoreSession();
+	updateAccountControls();
+	await refreshCollections();
+	window.setInterval(refreshCollections, 10000);
 }
 
 function makeElement(tag, className, text) {
@@ -192,6 +335,35 @@ function makeElement(tag, className, text) {
 }
 
 function renderList() {
+	const selectedCollection = collections.find((entry) => entry.owner_id === selectedOwnerId);
+	const canEdit = canEditSelectedList();
+	listSelect.replaceChildren();
+	collections.forEach((entry) => {
+		const option = document.createElement("option");
+		option.value = entry.owner_id;
+		option.textContent = entry.display_name;
+		option.selected = entry.owner_id === selectedOwnerId;
+		listSelect.append(option);
+	});
+	listPicker.hidden = collections.length === 0;
+	noAccounts.hidden = collections.length > 0;
+	openSearchButton.hidden = !canEdit;
+	document.querySelectorAll(".empty-add").forEach((button) => { button.hidden = !canEdit; });
+	searchPanel.hidden = !canEdit;
+	if (!selectedCollection) {
+		introCopy.textContent = authSession
+			? "Votre compte n’a pas encore de liste configurée."
+			: "Aucune liste de membre n’est encore disponible.";
+		listPermission.textContent = "";
+	} else {
+		introCopy.textContent = `Liste publique de ${selectedCollection.display_name}.`;
+		listPermission.textContent = canEdit
+			? "Vous pouvez modifier cette liste."
+			: authSession
+				? "Lecture seule : votre compte ne peut modifier que sa propre liste."
+				: "Lecture seule. Connectez-vous pour modifier votre propre liste.";
+	}
+
 	listElement.replaceChildren();
 	const visibleAnime = activeFilter === "all"
 		? animeList
@@ -210,7 +382,13 @@ function renderList() {
 	document.querySelector("#planned-count").textContent = counts.planned;
 	document.querySelector("#watching-count").textContent = counts.watching;
 	document.querySelector("#completed-count").textContent = counts.completed;
-	emptyState.hidden = animeList.length > 0;
+	emptyState.hidden = !selectedCollection || animeList.length > 0;
+	emptyState.querySelector("h2").textContent = canEdit
+		? "Votre prochaine histoire commence ici."
+		: "Cette liste est encore vide.";
+	emptyState.querySelector(":scope > p:not(.eyebrow)").textContent = canEdit
+		? "Recherchez un anime et ajoutez-le à votre collection."
+		: "Aucun anime n’a encore été ajouté à cette liste.";
 	filteredEmpty.hidden = animeList.length === 0 || visibleAnime.length > 0;
 }
 
@@ -241,6 +419,7 @@ function createAnimeCard(anime) {
 	status.className = "status-select";
 	status.setAttribute("aria-label", `Statut de ${anime.title}`);
 	status.dataset.status = anime.status;
+	status.disabled = !canEditSelectedList();
 	Object.entries(STATUS_LABELS).forEach(([value, label]) => {
 		const option = document.createElement("option");
 		option.value = value;
@@ -258,6 +437,7 @@ function createAnimeCard(anime) {
 	remove.type = "button";
 	remove.setAttribute("aria-label", `Supprimer ${anime.title}`);
 	remove.title = "Supprimer de la liste";
+	remove.hidden = !canEditSelectedList();
 	remove.addEventListener("click", () => {
 		animeList = animeList.filter((item) => item.id !== anime.id);
 		saveAnimeList();
@@ -312,7 +492,7 @@ function renderSearchResults(animeResults) {
 		add.setAttribute("aria-label", `Ajouter ${title}`);
 		add.title = `Ajouter ${title}`;
 		const alreadyAdded = animeList.some((entry) => entry.id === anime.id);
-		add.disabled = alreadyAdded;
+		add.disabled = alreadyAdded || !canEditSelectedList();
 		if (alreadyAdded) {
 			add.textContent = "✓";
 			add.setAttribute("aria-label", `${title} est déjà dans votre liste`);
@@ -324,7 +504,7 @@ function renderSearchResults(animeResults) {
 }
 
 function addAnime(anime) {
-	if (animeList.some((entry) => entry.id === anime.id)) return;
+	if (!canEditSelectedList() || animeList.some((entry) => entry.id === anime.id)) return;
 	animeList.unshift({
 		id: anime.id,
 		title: anime.title_english || anime.title,
@@ -410,21 +590,100 @@ document.querySelectorAll("[data-filter]").forEach((button) => {
 document.querySelectorAll(".empty-add, #open-search").forEach((button) => button.addEventListener("click", openSearch));
 document.querySelector("#close-search").addEventListener("click", () => { searchPanel.hidden = true; });
 
-importLocalButton.addEventListener("click", () => {
-	animeList = loadAnimeList();
-	importLocalButton.hidden = true;
+listSelect.addEventListener("change", () => {
+	selectedOwnerId = listSelect.value;
+	animeList = collections.find((entry) => entry.owner_id === selectedOwnerId)?.anime_list || [];
 	renderList();
-	saveAnimeList();
+	setSyncStatus(canEditSelectedList() ? "Votre liste est affichée." : "Liste affichée en lecture seule.", "success");
 });
 
-retrySyncButton.addEventListener("click", () => {
-	if (!sharedStorageReady) {
-		initializeStorage();
-	} else if (localChangesPending) {
-		saveAnimeList();
-	} else {
-		refreshSharedAnimeList();
+authToggle.addEventListener("click", () => {
+	if (authSession) {
+		signOut();
+		return;
+	}
+	loginPanelOpen = !loginPanelOpen;
+	updateAccountControls();
+	if (loginPanelOpen && authView === "login") document.querySelector("#login-email").focus();
+});
+
+document.querySelector("#forgot-password-link").addEventListener("click", () => {
+	authView = "request";
+	authMessage.textContent = "";
+	document.querySelector("#recovery-email").value = document.querySelector("#login-email").value;
+	updateAccountControls();
+	document.querySelector("#recovery-email").focus();
+});
+
+document.querySelector("#back-to-login-from-request").addEventListener("click", () => {
+	authView = "login";
+	authMessage.textContent = "";
+	updateAccountControls();
+	document.querySelector("#login-email").focus();
+});
+
+backToLoginFromUpdate.addEventListener("click", () => {
+	authView = "login";
+	loginPanelOpen = true;
+	authMessage.textContent = "";
+	updateAccountControls();
+	document.querySelector("#login-email").focus();
+});
+
+loginForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const formData = new FormData(loginForm);
+	loginSubmit.disabled = true;
+	loginSubmit.textContent = "Connexion...";
+	authMessage.textContent = "";
+	try {
+		await signIn(String(formData.get("email")).trim(), String(formData.get("password")));
+	} catch (error) {
+		authMessage.textContent = error.message;
+	} finally {
+		loginSubmit.disabled = false;
+		loginSubmit.textContent = "Se connecter";
 	}
 });
+
+recoveryRequestForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const email = String(new FormData(recoveryRequestForm).get("email")).trim();
+	recoveryRequestSubmit.disabled = true;
+	recoveryRequestSubmit.textContent = "Envoi...";
+	authMessage.textContent = "";
+	try {
+		await requestPasswordRecovery(email);
+		authMessage.textContent = "Si un compte correspond à cette adresse, un lien de récupération va être envoyé.";
+	} catch (error) {
+		authMessage.textContent = error.message;
+	} finally {
+		recoveryRequestSubmit.disabled = false;
+		recoveryRequestSubmit.textContent = "Envoyer le lien";
+	}
+});
+
+recoveryUpdateForm.addEventListener("submit", async (event) => {
+	event.preventDefault();
+	const formData = new FormData(recoveryUpdateForm);
+	const password = String(formData.get("password"));
+	if (password !== String(formData.get("confirm-password"))) {
+		authMessage.textContent = "Les deux mots de passe ne correspondent pas.";
+		return;
+	}
+	recoveryUpdateSubmit.disabled = true;
+	recoveryUpdateSubmit.textContent = "Enregistrement...";
+	authMessage.textContent = "";
+	try {
+		await updateRecoveredPassword(password);
+	} catch (error) {
+		authMessage.textContent = error.message;
+	} finally {
+		recoveryUpdateSubmit.disabled = false;
+		recoveryUpdateSubmit.textContent = "Enregistrer le mot de passe";
+	}
+});
+
+retrySyncButton.addEventListener("click", () => { void refreshCollections(); });
 
 initializeStorage();

@@ -9,9 +9,9 @@
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-		<link rel="stylesheet" href="style.css?v=shared-1" />
-		<script src="config.js?v=shared-1" defer></script>
-		<script src="app.js?v=shared-1" defer></script>
+		<link rel="stylesheet" href="style.css?v=accounts-2" />
+		<script src="config.js?v=accounts-2" defer></script>
+		<script src="app.js?v=accounts-2" defer></script>
 	</head>
 	<body>
 		<div class="app-shell">
@@ -20,15 +20,43 @@
 					<span class="brand-mark" aria-hidden="true">O</span>
 					<span>otaku<span class="wordmark-light">list</span></span>
 				</a>
-				<span class="topbar-note"><span class="live-dot"></span> Votre coin anime</span>
+				<div class="account-area">
+					<span class="topbar-note"><span class="live-dot"></span> Votre coin anime</span>
+					<button class="account-button" id="auth-toggle" type="button">Se connecter</button>
+					<div class="login-panel" id="login-panel" hidden>
+						<form id="login-form">
+							<label for="login-email">E-mail</label>
+							<input id="login-email" name="email" type="email" autocomplete="username" required />
+							<label for="login-password">Mot de passe</label>
+							<input id="login-password" name="password" type="password" autocomplete="current-password" required />
+							<button type="submit" id="login-submit">Se connecter</button>
+							<button class="auth-link" id="forgot-password-link" type="button">Mot de passe oublié ?</button>
+						</form>
+						<form id="recovery-request-form" hidden>
+							<label for="recovery-email">E-mail</label>
+							<input id="recovery-email" name="email" type="email" autocomplete="email" required />
+							<button type="submit" id="recovery-request-submit">Envoyer le lien</button>
+							<button class="auth-link" id="back-to-login-from-request" type="button">Retour à la connexion</button>
+						</form>
+						<form id="recovery-update-form" hidden>
+							<label for="new-password">Nouveau mot de passe</label>
+							<input id="new-password" name="password" type="password" autocomplete="new-password" minlength="8" required />
+							<label for="confirm-password">Confirmer le mot de passe</label>
+							<input id="confirm-password" name="confirm-password" type="password" autocomplete="new-password" minlength="8" required />
+							<button type="submit" id="recovery-update-submit">Enregistrer le mot de passe</button>
+						</form>
+						<button class="auth-link" id="back-to-login-from-update" type="button" hidden>Retour à la connexion</button>
+						<p id="auth-message" role="status" aria-live="polite"></p>
+					</div>
+				</div>
 			</header>
 
 			<main>
 				<section class="intro" aria-labelledby="page-title">
 					<div>
 						<p class="eyebrow">VOTRE COLLECTION, À VOTRE RYTHME</p>
-						<h1 id="page-title">Ma liste<span class="title-period">.</span></h1>
-						<p class="intro-copy">Tous vos prochains épisodes, au même endroit.</p>
+						<h1 id="page-title">OtakuList<span class="title-period">.</span></h1>
+						<p class="intro-copy" id="intro-copy">Découvrez les listes des membres.</p>
 					</div>
 					<div class="collection-count" aria-live="polite">
 						<span class="count-number" id="total-count">0</span>
@@ -38,6 +66,11 @@
 
 				<section class="collection" aria-label="Ma collection d'animes">
 					<div class="collection-toolbar">
+						<div class="list-picker" id="list-picker" hidden>
+							<label for="list-select">Liste à afficher</label>
+							<select id="list-select"></select>
+							<p id="list-permission"></p>
+						</div>
 						<div class="filter-tabs" role="group" aria-label="Filtrer par statut">
 							<button class="filter-tab is-active" type="button" data-filter="all" aria-pressed="true">Tout <span id="all-count">0</span></button>
 							<button class="filter-tab" type="button" data-filter="watching" aria-pressed="false">En cours <span id="watching-count">0</span></button>
@@ -50,6 +83,7 @@
 						</button>
 					</div>
 
+					<p class="no-accounts" id="no-accounts" hidden>Aucune liste n’est encore disponible.</p>
 					<div class="search-panel" id="search-panel" hidden>
 						<div class="search-heading">
 							<div>
@@ -87,7 +121,6 @@
 				<span>FAIT POUR LES HISTOIRES QUI RESTENT.</span>
 				<div class="storage-info">
 					<span id="sync-status" role="status" aria-live="polite">Chargement des données...</span>
-					<button class="import-button" id="import-local" type="button" hidden>Importer la liste de cet appareil</button>
 					<button class="import-button" id="retry-sync" type="button" hidden>Réessayer</button>
 				</div>
 			</footer>
