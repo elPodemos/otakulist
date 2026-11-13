@@ -1,6 +1,6 @@
 # OtakuList
 
-Application statique pour organiser et consulter des listes d'animes. La recherche de titres utilise l'API Kitsu ; les listes et comptes sont gérés par Supabase.
+Application statique pour organiser et consulter des listes d'animes. La recherche de titres utilise l'API Kitsu et les synopsis sont traduits en français via MyMemory ; les listes et comptes sont gérés par Supabase.
 
 ## Comptes et listes
 

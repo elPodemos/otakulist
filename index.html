@@ -3,15 +3,15 @@
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<meta name="theme-color" content="#f4f3ee" />
+		<meta name="theme-color" content="#f7f4fc" />
 		<meta name="description" content="Organisez votre liste d'animes à voir, en cours et terminés." />
 		<title>OtakuList — Ma collection d'animes</title>
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-		<link rel="stylesheet" href="style.css?v=accounts-2" />
+		<link rel="stylesheet" href="style.css?v=pastel-1" />
 		<script src="config.js?v=accounts-2" defer></script>
-		<script src="app.js?v=accounts-2" defer></script>
+		<script src="app.js?v=pastel-1" defer></script>
 	</head>
 	<body>
 		<div class="app-shell">
@@ -40,9 +40,9 @@
 						</form>
 						<form id="recovery-update-form" hidden>
 							<label for="new-password">Nouveau mot de passe</label>
-							<input id="new-password" name="password" type="password" autocomplete="new-password" minlength="8" required />
+							<input id="new-password" name="password" type="password" autocomplete="new-password" minlength="6" required />
 							<label for="confirm-password">Confirmer le mot de passe</label>
-							<input id="confirm-password" name="confirm-password" type="password" autocomplete="new-password" minlength="8" required />
+							<input id="confirm-password" name="confirm-password" type="password" autocomplete="new-password" minlength="6" required />
 							<button type="submit" id="recovery-update-submit">Enregistrer le mot de passe</button>
 						</form>
 						<button class="auth-link" id="back-to-login-from-update" type="button" hidden>Retour à la connexion</button>
@@ -101,6 +101,13 @@
 						<p class="search-hint">Recherche propulsée par Kitsu.</p>
 						<div class="search-results" id="search-results" aria-live="polite"></div>
 					</div>
+
+					<dialog class="anime-details-dialog" id="anime-details-dialog" aria-labelledby="anime-details-title">
+						<div class="anime-details-dialog-content">
+							<button class="icon-button details-close" id="close-anime-details" type="button" aria-label="Fermer les détails" title="Fermer">×</button>
+							<div id="anime-details-content"></div>
+						</div>
+					</dialog>
 
 					<div class="anime-list" id="anime-list" aria-live="polite"></div>
 					<div class="empty-state" id="empty-state">

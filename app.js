@@ -1,4 +1,6 @@
 const API_URL = "https://kitsu.io/api/edge/anime";
+const TRANSLATION_URL = "https://api.mymemory.translated.net/get";
+const TRANSLATION_CHUNK_LIMIT = 450;
 const SUPABASE_URL = window.OTAKULIST_CONFIG?.supabaseUrl?.replace(/\/+$/, "");
 const SUPABASE_ANON_KEY = window.OTAKULIST_CONFIG?.supabaseAnonKey;
 const SESSION_KEY = "otakulist-auth-session-v1";
@@ -20,6 +22,8 @@ const searchResults = document.querySelector("#search-results");
 const syncStatus = document.querySelector("#sync-status");
 const retrySyncButton = document.querySelector("#retry-sync");
 const authToggle = document.querySelector("#auth-toggle");
+const animeDetailsDialog = document.querySelector("#anime-details-dialog");
+const animeDetailsContent = document.querySelector("#anime-details-content");
 const loginPanel = document.querySelector("#login-panel");
 const loginForm = document.querySelector("#login-form");
 const loginSubmit = document.querySelector("#login-submit");
@@ -43,6 +47,9 @@ let authSession = null;
 let activeFilter = "all";
 let searchAnimeResults = [];
 let searchRequestId = 0;
+const synopsisTranslations = new Map();
+const animeMetadataRequests = new Map();
+let translationQueue = Promise.resolve();
 let pendingWrites = 0;
 let writeQueue = Promise.resolve();
 let loginPanelOpen = false;
@@ -334,6 +341,112 @@ function makeElement(tag, className, text) {
 	return element;
 }
 
+function splitSynopsis(synopsis) {
+	const chunks = [];
+	let remaining = synopsis.trim();
+	while (remaining.length > TRANSLATION_CHUNK_LIMIT) {
+		const lastSpace = remaining.lastIndexOf(" ", TRANSLATION_CHUNK_LIMIT);
+		const splitAt = lastSpace >= TRANSLATION_CHUNK_LIMIT / 2 ? lastSpace : TRANSLATION_CHUNK_LIMIT;
+		chunks.push(remaining.slice(0, splitAt).trim());
+		remaining = remaining.slice(splitAt).trim();
+	}
+	if (remaining) chunks.push(remaining);
+	return chunks;
+}
+
+async function requestFrenchTranslation(synopsis) {
+	const translatedChunks = [];
+	for (const chunk of splitSynopsis(synopsis)) {
+		const params = new URLSearchParams({ q: chunk, langpair: "en|fr" });
+		const response = await fetch(`${TRANSLATION_URL}?${params}`);
+		if (!response.ok) throw new Error(`L'API de traduction a répondu avec l'erreur ${response.status}.`);
+		const result = await response.json();
+		if (result.responseStatus !== 200 || typeof result.responseData?.translatedText !== "string") {
+			throw new Error(result.responseDetails || "La traduction du synopsis a échoué.");
+		}
+		translatedChunks.push(result.responseData.translatedText);
+	}
+	return translatedChunks.join(" ");
+}
+
+function translateSynopsisToFrench(synopsis) {
+	let translation = synopsisTranslations.get(synopsis);
+	if (!translation) {
+		translation = translationQueue.then(() => requestFrenchTranslation(synopsis));
+		translationQueue = translation.then(() => undefined, () => undefined);
+		synopsisTranslations.set(synopsis, translation);
+	}
+	return translation;
+}
+
+function formatEpisodeCount(count) {
+	if (Number.isInteger(count) && count >= 0) return `${count} épisode${count === 1 ? "" : "s"}`;
+	if (count === undefined) return "Nombre d’épisodes en cours de chargement…";
+	return "Nombre d’épisodes non communiqué";
+}
+
+function requestAnimeMetadata(animeId) {
+	const key = String(animeId);
+	let request = animeMetadataRequests.get(key);
+	if (!request) {
+		const params = new URLSearchParams({
+			"fields[anime]": "episodeCount,ageRating,averageRating,status,slug,subtype,startDate",
+		});
+		request = fetch(`${API_URL}/${encodeURIComponent(key)}?${params}`)
+			.then((response) => {
+				if (!response.ok) throw new Error(`L'API Kitsu a répondu avec l'erreur ${response.status}.`);
+				return response.json();
+			})
+			.then((payload) => {
+				const metadata = payload.data?.attributes;
+				if (!metadata || metadata.episodeCount === undefined) {
+					throw new Error("Les informations de cet anime sont indisponibles.");
+				}
+				if (metadata.episodeCount !== null && (!Number.isInteger(metadata.episodeCount) || metadata.episodeCount < 0)) {
+					throw new Error("Le nombre d’épisodes fourni par Kitsu est invalide.");
+				}
+				return metadata;
+			});
+		animeMetadataRequests.set(key, request);
+	}
+	return request;
+}
+
+function mergeAnimeMetadata(anime, metadata) {
+	if (anime.episodeCount === undefined) anime.episodeCount = metadata.episodeCount;
+	if (!anime.ageRating) anime.ageRating = metadata.ageRating || "";
+	if (!anime.averageRating) anime.averageRating = metadata.averageRating || "";
+	if (!anime.airStatus) anime.airStatus = metadata.status || "";
+	if (!anime.slug) anime.slug = metadata.slug || "";
+	if (!anime.type) anime.type = metadata.subtype || "";
+	if (!anime.year) anime.year = metadata.startDate?.slice(0, 4) || "";
+}
+
+function hasMissingAnimeMetadata(anime) {
+	return anime.episodeCount === undefined || !anime.ageRating || !anime.averageRating || !anime.airStatus || !anime.slug;
+}
+
+function loadAnimeMetadata(anime, element) {
+	void requestAnimeMetadata(anime.id).then((metadata) => {
+		mergeAnimeMetadata(anime, metadata);
+		if (element.isConnected) element.textContent = formatEpisodeCount(anime.episodeCount);
+	}).catch(() => {
+		if (element.isConnected) element.textContent = "Nombre d’épisodes indisponible.";
+	});
+}
+
+function translateSynopsisInto(element, source) {
+	void translateSynopsisToFrench(source).then((translation) => {
+		if (element.isConnected) element.textContent = translation;
+	}).catch(() => {
+		if (!element.isConnected) return;
+		element.textContent = source;
+		const warning = makeElement("p", "translation-warning", "Traduction indisponible. Le texte original est affiché.");
+		warning.setAttribute("role", "status");
+		element.after(warning);
+	});
+}
+
 function renderList() {
 	const selectedCollection = collections.find((entry) => entry.owner_id === selectedOwnerId);
 	const canEdit = canEditSelectedList();
@@ -394,6 +507,7 @@ function renderList() {
 
 function createAnimeCard(anime) {
 	const card = makeElement("article", "anime-card");
+	card.dataset.status = anime.status;
 	const poster = anime.image
 		? makeElement("img", "poster")
 		: makeElement("div", "poster poster-fallback", anime.title.slice(0, 1));
@@ -411,8 +525,20 @@ function createAnimeCard(anime) {
 	const info = makeElement("div", "anime-info");
 	const meta = [anime.year, anime.type].filter(Boolean).join(" · ");
 	info.append(makeElement("p", "anime-meta", meta || "Anime"));
+	const episodes = makeElement("p", "anime-episodes", formatEpisodeCount(anime.episodeCount));
+	info.append(episodes);
+	if (anime.episodeCount === undefined && anime.id) loadAnimeMetadata(anime, episodes);
 	info.append(makeElement("h2", "anime-title", anime.title));
-	if (anime.synopsis) info.append(makeElement("p", "anime-synopsis", anime.synopsis));
+	if (anime.synopsis) {
+		const synopsis = makeElement("p", "anime-synopsis", "Traduction en cours…");
+		info.append(synopsis);
+		translateSynopsisInto(synopsis, anime.synopsis);
+	}
+	const details = makeElement("button", "details-card-button", "En savoir plus");
+	details.type = "button";
+	details.setAttribute("aria-label", `En savoir plus sur ${anime.title}`);
+	details.addEventListener("click", () => showAnimeDetails(anime));
+	info.append(details);
 
 	const bottom = makeElement("div", "card-bottom");
 	const status = document.createElement("select");
@@ -459,6 +585,81 @@ function showSearchMessage(message) {
 	searchResults.replaceChildren(makeElement("p", "search-message", message));
 }
 
+function getAirStatusLabel(status) {
+	return {
+		finished: "Diffusion terminée",
+		current: "En cours de diffusion",
+		upcoming: "À venir",
+		tba: "À confirmer",
+	}[status] || "";
+}
+
+function formatAnimeFacts(anime) {
+	const facts = [
+		anime.year,
+		anime.type,
+		anime.ageRating ? `Âge conseillé : ${anime.ageRating}` : "",
+		getAirStatusLabel(anime.airStatus),
+	];
+	const rating = anime.averageRating ? Number(anime.averageRating) : Number.NaN;
+	if (Number.isFinite(rating)) facts.push(`Note Kitsu : ${(rating / 10).toLocaleString("fr-FR", { maximumFractionDigits: 1 })}/10`);
+	return facts.filter(Boolean).join(" · ") || "Informations non renseignées";
+}
+
+function showAnimeDetails(anime) {
+	const layout = makeElement("div", "anime-details-layout");
+	const animeTitle = anime.title_english || anime.title;
+	const imageUrl = anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url || anime.image;
+	if (imageUrl) {
+		const poster = makeElement("img", "details-poster");
+		poster.src = imageUrl;
+		poster.alt = `Affiche de ${animeTitle}`;
+		poster.loading = "lazy";
+		layout.append(poster);
+	} else {
+		layout.append(makeElement("div", "details-poster details-poster-fallback", animeTitle.slice(0, 1)));
+	}
+
+	const overview = makeElement("div", "details-overview");
+	const title = makeElement("h2", "details-title", animeTitle);
+	title.id = "anime-details-title";
+	overview.append(title);
+	const metadataFacts = makeElement("p", "details-meta", formatAnimeFacts(anime));
+	overview.append(metadataFacts);
+	const episodes = makeElement("p", "details-episodes", formatEpisodeCount(anime.episodeCount));
+	overview.append(episodes);
+	layout.append(overview);
+	if (anime.id && hasMissingAnimeMetadata(anime)) {
+		void requestAnimeMetadata(anime.id).then((metadata) => {
+			mergeAnimeMetadata(anime, metadata);
+			if (metadataFacts.isConnected) metadataFacts.textContent = formatAnimeFacts(anime);
+			if (episodes.isConnected) episodes.textContent = formatEpisodeCount(anime.episodeCount);
+		}).catch(() => {
+			if (metadataFacts.isConnected) metadataFacts.textContent = `${formatAnimeFacts(anime)} · Détails Kitsu indisponibles`;
+			if (episodes.isConnected && anime.episodeCount === undefined) episodes.textContent = "Nombre d’épisodes indisponible.";
+		});
+	}
+
+	const synopsisSection = makeElement("section", "details-synopsis");
+	synopsisSection.append(makeElement("h3", "", "Synopsis"));
+	const synopsis = makeElement("p", "details-synopsis-copy", anime.synopsis || "Aucun synopsis disponible.");
+	synopsis.setAttribute("aria-live", "polite");
+	synopsisSection.append(synopsis);
+	if (anime.synopsis) translateSynopsisInto(synopsis, anime.synopsis);
+	layout.append(synopsisSection);
+
+	const link = document.createElement("a");
+	link.className = "details-source";
+	link.href = `https://kitsu.io/anime/${encodeURIComponent(anime.slug || anime.id)}`;
+	link.target = "_blank";
+	link.rel = "noopener noreferrer";
+	link.textContent = "Voir la fiche complète sur Kitsu";
+	synopsisSection.append(link);
+
+	animeDetailsContent.replaceChildren(layout);
+	animeDetailsDialog.showModal();
+}
+
 function renderSearchResults(animeResults) {
 	searchResults.replaceChildren();
 	if (animeResults.length === 0) {
@@ -485,20 +686,29 @@ function renderSearchResults(animeResults) {
 
 		const copy = makeElement("div", "result-copy");
 		copy.append(makeElement("p", "result-title", title));
-		copy.append(makeElement("p", "result-meta", [anime.year, anime.type].filter(Boolean).join(" · ") || "Anime"));
+		const resultMeta = [anime.year, anime.type];
+		if (Number.isInteger(anime.episodeCount)) resultMeta.push(formatEpisodeCount(anime.episodeCount));
+		copy.append(makeElement("p", "result-meta", resultMeta.filter(Boolean).join(" · ") || "Anime"));
 
-		const add = makeElement("button", "result-add", "+");
-		add.type = "button";
-		add.setAttribute("aria-label", `Ajouter ${title}`);
-		add.title = `Ajouter ${title}`;
+		const actions = makeElement("div", "result-actions");
+		const details = makeElement("button", "result-details", "En savoir plus");
+		details.type = "button";
+		details.setAttribute("aria-label", `En savoir plus sur ${title}`);
+		details.addEventListener("click", () => showAnimeDetails(anime));
+
 		const alreadyAdded = animeList.some((entry) => entry.id === anime.id);
+		const add = makeElement("button", "result-add", alreadyAdded ? "Déjà ajouté" : "Ajouter à la liste");
+		add.type = "button";
+		add.setAttribute("aria-label", `Ajouter ${title} à la liste`);
+		add.title = alreadyAdded ? `${title} est déjà dans la liste` : `Ajouter ${title} à la liste`;
 		add.disabled = alreadyAdded || !canEditSelectedList();
 		if (alreadyAdded) {
-			add.textContent = "✓";
 			add.setAttribute("aria-label", `${title} est déjà dans votre liste`);
 		}
 		add.addEventListener("click", () => addAnime(anime));
-		item.append(copy, add);
+		actions.append(details, add);
+		copy.append(actions);
+		item.append(copy);
 		searchResults.append(item);
 	});
 }
@@ -511,6 +721,11 @@ function addAnime(anime) {
 		image: anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url || "",
 		year: anime.year || anime.aired?.prop?.from?.year || "",
 		type: anime.type || "",
+		episodeCount: anime.episodeCount,
+		ageRating: anime.ageRating || "",
+		averageRating: anime.averageRating || "",
+		airStatus: anime.airStatus || "",
+		slug: anime.slug || "",
 		synopsis: anime.synopsis || "",
 		status: "planned",
 	});
@@ -549,6 +764,11 @@ searchForm.addEventListener("submit", async (event) => {
 				title_english: title,
 				type: attributes.subtype || "",
 				year: attributes.startDate?.slice(0, 4) || "",
+				episodeCount: Number.isInteger(attributes.episodeCount) ? attributes.episodeCount : undefined,
+				ageRating: attributes.ageRating || "",
+				averageRating: attributes.averageRating || "",
+				airStatus: attributes.status || "",
+				slug: attributes.slug || "",
 				synopsis: attributes.synopsis || "",
 				images: {
 					jpg: {
@@ -589,6 +809,7 @@ document.querySelectorAll("[data-filter]").forEach((button) => {
 
 document.querySelectorAll(".empty-add, #open-search").forEach((button) => button.addEventListener("click", openSearch));
 document.querySelector("#close-search").addEventListener("click", () => { searchPanel.hidden = true; });
+document.querySelector("#close-anime-details").addEventListener("click", () => animeDetailsDialog.close());
 
 listSelect.addEventListener("change", () => {
 	selectedOwnerId = listSelect.value;
