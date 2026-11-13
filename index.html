@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="fr">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="theme-color" content="#f4f3ee" />
+		<meta name="description" content="Organisez votre liste d'animes à voir, en cours et terminés." />
+		<title>OtakuList — Ma collection d'animes</title>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+		<link rel="stylesheet" href="style.css" />
+		<script src="app.js" defer></script>
+	</head>
+	<body>
+		<div class="app-shell">
+			<header class="topbar">
+				<a class="wordmark" href="#" aria-label="OtakuList, accueil">
+					<span class="brand-mark" aria-hidden="true">O</span>
+					<span>otaku<span class="wordmark-light">list</span></span>
+				</a>
+				<span class="topbar-note"><span class="live-dot"></span> Votre coin anime</span>
+			</header>
+
+			<main>
+				<section class="intro" aria-labelledby="page-title">
+					<div>
+						<p class="eyebrow">VOTRE COLLECTION, À VOTRE RYTHME</p>
+						<h1 id="page-title">Ma liste<span class="title-period">.</span></h1>
+						<p class="intro-copy">Tous vos prochains épisodes, au même endroit.</p>
+					</div>
+					<div class="collection-count" aria-live="polite">
+						<span class="count-number" id="total-count">0</span>
+						<span class="count-label">ANIME<span id="count-plural">S</span></span>
+					</div>
+				</section>
+
+				<section class="collection" aria-label="Ma collection d'animes">
+					<div class="collection-toolbar">
+						<div class="filter-tabs" role="group" aria-label="Filtrer par statut">
+							<button class="filter-tab is-active" type="button" data-filter="all" aria-pressed="true">Tout <span id="all-count">0</span></button>
+							<button class="filter-tab" type="button" data-filter="watching" aria-pressed="false">En cours <span id="watching-count">0</span></button>
+							<button class="filter-tab" type="button" data-filter="planned" aria-pressed="false">À voir <span id="planned-count">0</span></button>
+							<button class="filter-tab" type="button" data-filter="completed" aria-pressed="false">Terminé <span id="completed-count">0</span></button>
+						</div>
+						<button class="add-button" id="open-search" type="button">
+							<span class="plus-icon" aria-hidden="true">+</span>
+							<span>Ajouter un anime</span>
+						</button>
+					</div>
+
+					<div class="search-panel" id="search-panel" hidden>
+						<div class="search-heading">
+							<div>
+								<p class="eyebrow">AGRANDIR LA COLLECTION</p>
+								<h2>Quel anime cherchez-vous ?</h2>
+							</div>
+							<button class="icon-button close-search" id="close-search" type="button" aria-label="Fermer la recherche" title="Fermer">×</button>
+						</div>
+						<form class="search-form" id="search-form">
+							<label class="visually-hidden" for="anime-query">Titre de l'anime</label>
+							<span class="search-icon" aria-hidden="true">⌕</span>
+							<input id="anime-query" name="query" type="search" placeholder="Ex. : Frieren, Naruto..." autocomplete="off" required />
+							<button type="submit" id="search-submit">Rechercher</button>
+						</form>
+						<p class="search-hint">Recherche propulsée par Kitsu.</p>
+						<div class="search-results" id="search-results" aria-live="polite"></div>
+					</div>
+
+					<div class="anime-list" id="anime-list" aria-live="polite"></div>
+					<div class="empty-state" id="empty-state">
+						<div class="empty-art" aria-hidden="true"><span>ア</span><i></i><b></b></div>
+						<p class="eyebrow">LA PREMIÈRE PAGE EST À VOUS</p>
+						<h2>Votre prochaine histoire commence ici.</h2>
+						<p>Recherchez un anime et ajoutez-le à votre collection.</p>
+						<button class="add-button empty-add" type="button">
+							<span class="plus-icon" aria-hidden="true">+</span>
+							<span>Ajouter un anime</span>
+						</button>
+					</div>
+					<p class="filtered-empty" id="filtered-empty" hidden>Aucun anime dans cette catégorie pour le moment.</p>
+				</section>
+			</main>
+
+			<footer class="footer"><span>FAIT POUR LES HISTOIRES QUI RESTENT.</span><span>DONNÉES ENREGISTRÉES SUR CET APPAREIL</span></footer>
+		</div>
+	</body>
+</html>
