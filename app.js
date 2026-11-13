@@ -3,6 +3,9 @@ const TRANSLATION_URL = "https://api.mymemory.translated.net/get";
 const TRANSLATION_CHUNK_LIMIT = 450;
 const SUPABASE_URL = window.OTAKULIST_CONFIG?.supabaseUrl?.replace(/\/+$/, "");
 const SUPABASE_ANON_KEY = window.OTAKULIST_CONFIG?.supabaseAnonKey;
+const TMDB_LOCALIZE_URL = SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/tmdb-localize` : "";
+const FRENCH_METADATA_CACHE_KEY = "otakulist-french-metadata-v1";
+const FRENCH_METADATA_CACHE_TTL = 30 * 24 * 60 * 60 * 1000;
 const SESSION_KEY = "otakulist-auth-session-v1";
 const COLLECTIONS_URL = `${SUPABASE_URL}/rest/v1/user_anime_lists`;
 const STATUS_LABELS = {
@@ -49,7 +52,10 @@ let searchAnimeResults = [];
 let searchRequestId = 0;
 const synopsisTranslations = new Map();
 const animeMetadataRequests = new Map();
+const frenchAnimeMetadataRequests = new Map();
 let translationQueue = Promise.resolve();
+let tmdbLocalizationQueue = Promise.resolve();
+let tmdbFailureCooldownUntil = 0;
 let pendingWrites = 0;
 let writeQueue = Promise.resolve();
 let loginPanelOpen = false;
@@ -379,6 +385,107 @@ function translateSynopsisToFrench(synopsis) {
 	return translation;
 }
 
+function getFrenchMetadataStorageKey(anime) {
+	return `${FRENCH_METADATA_CACHE_KEY}:${encodeURIComponent(String(anime.id))}`;
+}
+
+function readCachedFrenchMetadata(anime) {
+	try {
+		const cached = JSON.parse(localStorage.getItem(getFrenchMetadataStorageKey(anime)) || "null");
+		if (!cached || Date.now() - cached.savedAt >= FRENCH_METADATA_CACHE_TTL) return null;
+		return cached.value;
+	} catch (error) {
+		console.warn("Le cache de traduction français est indisponible.", error);
+		return null;
+	}
+}
+
+function cacheFrenchMetadata(anime, value) {
+	try {
+		localStorage.setItem(getFrenchMetadataStorageKey(anime), JSON.stringify({ savedAt: Date.now(), value }));
+	} catch (error) {
+		console.warn("Impossible de conserver le cache de traduction français.", error);
+	}
+}
+
+async function requestFrenchAnimeMetadata(anime) {
+	if (!TMDB_LOCALIZE_URL || !SUPABASE_ANON_KEY) {
+		throw new Error("La fonction de localisation TMDB n’est pas configurée.");
+	}
+	const response = await fetch(TMDB_LOCALIZE_URL, {
+		method: "POST",
+		headers: {
+			...apiHeaders({ json: true }),
+			Authorization: `Bearer ${authSession?.access_token || SUPABASE_ANON_KEY}`,
+		},
+		body: JSON.stringify({
+			title: anime.title_english || anime.title,
+			aliases: Array.isArray(anime.titleAliases) ? anime.titleAliases.slice(0, 10) : [],
+			year: anime.year || "",
+			type: anime.type || "",
+		}),
+	});
+	if (!response.ok) {
+		let detail = "";
+		try {
+			const payload = await response.json();
+			detail = payload.error || "";
+		} catch {
+			detail = "";
+		}
+		throw new Error(detail || `La fonction de localisation TMDB a répondu avec l’erreur ${response.status}.`);
+	}
+	const result = await response.json();
+	return {
+		titleFr: typeof result.titleFr === "string" ? result.titleFr : "",
+		synopsisFr: typeof result.synopsisFr === "string" ? result.synopsisFr : "",
+	};
+}
+
+function getFrenchAnimeMetadata(anime) {
+	if (anime.titleFr || anime.synopsisFr) {
+		return Promise.resolve({ titleFr: anime.titleFr || "", synopsisFr: anime.synopsisFr || "" });
+	}
+	const key = `${String(anime.id)}:${anime.year || ""}`;
+	let request = frenchAnimeMetadataRequests.get(key);
+	if (request) return request;
+	const cached = readCachedFrenchMetadata(anime);
+	if (cached) return Promise.resolve(cached);
+	if (Date.now() < tmdbFailureCooldownUntil) {
+		return Promise.reject(new Error("Le service de localisation TMDB est temporairement indisponible."));
+	}
+	request = tmdbLocalizationQueue
+		.then(() => {
+			if (Date.now() < tmdbFailureCooldownUntil) {
+				throw new Error("Le service de localisation TMDB est temporairement indisponible.");
+			}
+			return requestFrenchAnimeMetadata(anime);
+		})
+		.then((metadata) => {
+			cacheFrenchMetadata(anime, metadata);
+			return metadata;
+		})
+		.catch((error) => {
+			frenchAnimeMetadataRequests.delete(key);
+			if (Date.now() >= tmdbFailureCooldownUntil) {
+				tmdbFailureCooldownUntil = Date.now() + 60 * 1000;
+				console.warn("Le service de localisation TMDB est indisponible.", error);
+			}
+			throw error;
+		});
+	tmdbLocalizationQueue = request.then(() => undefined, () => undefined);
+	frenchAnimeMetadataRequests.set(key, request);
+	return request;
+}
+
+function localizeAnimeTitleInto(element, anime, onLocalized) {
+	void getFrenchAnimeMetadata(anime).then((metadata) => {
+		if (!metadata.titleFr || !element.isConnected) return;
+		element.textContent = metadata.titleFr;
+		if (onLocalized) onLocalized(metadata.titleFr);
+	}).catch(() => {});
+}
+
 function formatEpisodeCount(count) {
 	if (Number.isInteger(count) && count >= 0) return `${count} épisode${count === 1 ? "" : "s"}`;
 	if (count === undefined) return "Nombre d’épisodes en cours de chargement…";
@@ -435,8 +542,13 @@ function loadAnimeMetadata(anime, element) {
 	});
 }
 
-function translateSynopsisInto(element, source) {
-	void translateSynopsisToFrench(source).then((translation) => {
+function translateSynopsisInto(element, anime) {
+	const source = anime.synopsis;
+	const localizedMetadata = getFrenchAnimeMetadata(anime).catch(() => ({}));
+	void localizedMetadata.then((metadata) => {
+		if (metadata.synopsisFr) return metadata.synopsisFr;
+		return translateSynopsisToFrench(source);
+	}).then((translation) => {
 		if (element.isConnected) element.textContent = translation;
 	}).catch(() => {
 		if (!element.isConnected) return;
@@ -528,16 +640,20 @@ function createAnimeCard(anime) {
 	const episodes = makeElement("p", "anime-episodes", formatEpisodeCount(anime.episodeCount));
 	info.append(episodes);
 	if (anime.episodeCount === undefined && anime.id) loadAnimeMetadata(anime, episodes);
-	info.append(makeElement("h2", "anime-title", anime.title));
+	const title = makeElement("h2", "anime-title", anime.titleFr || anime.title);
+	info.append(title);
 	if (anime.synopsis) {
 		const synopsis = makeElement("p", "anime-synopsis", "Traduction en cours…");
 		info.append(synopsis);
-		translateSynopsisInto(synopsis, anime.synopsis);
+		translateSynopsisInto(synopsis, anime);
 	}
 	const details = makeElement("button", "details-card-button", "En savoir plus");
 	details.type = "button";
 	details.setAttribute("aria-label", `En savoir plus sur ${anime.title}`);
 	details.addEventListener("click", () => showAnimeDetails(anime));
+	localizeAnimeTitleInto(title, anime, (localizedTitle) => {
+		details.setAttribute("aria-label", `En savoir plus sur ${localizedTitle}`);
+	});
 	info.append(details);
 
 	const bottom = makeElement("div", "card-bottom");
@@ -624,6 +740,7 @@ function showAnimeDetails(anime) {
 	const title = makeElement("h2", "details-title", animeTitle);
 	title.id = "anime-details-title";
 	overview.append(title);
+	localizeAnimeTitleInto(title, anime);
 	const metadataFacts = makeElement("p", "details-meta", formatAnimeFacts(anime));
 	overview.append(metadataFacts);
 	const episodes = makeElement("p", "details-episodes", formatEpisodeCount(anime.episodeCount));
@@ -645,7 +762,7 @@ function showAnimeDetails(anime) {
 	const synopsis = makeElement("p", "details-synopsis-copy", anime.synopsis || "Aucun synopsis disponible.");
 	synopsis.setAttribute("aria-live", "polite");
 	synopsisSection.append(synopsis);
-	if (anime.synopsis) translateSynopsisInto(synopsis, anime.synopsis);
+	if (anime.synopsis) translateSynopsisInto(synopsis, anime);
 	layout.append(synopsisSection);
 
 	const link = document.createElement("a");
@@ -721,6 +838,7 @@ function addAnime(anime) {
 		image: anime.images?.jpg?.large_image_url || anime.images?.jpg?.image_url || "",
 		year: anime.year || anime.aired?.prop?.from?.year || "",
 		type: anime.type || "",
+		titleAliases: Array.isArray(anime.titleAliases) ? anime.titleAliases.slice(0, 10) : [],
 		episodeCount: anime.episodeCount,
 		ageRating: anime.ageRating || "",
 		averageRating: anime.averageRating || "",
@@ -758,10 +876,16 @@ searchForm.addEventListener("submit", async (event) => {
 			const attributes = item.attributes || {};
 			const poster = attributes.posterImage || {};
 			const title = attributes.titles?.en || attributes.canonicalTitle || "Anime sans titre";
+			const titleAliases = [
+				attributes.canonicalTitle,
+				...Object.values(attributes.titles || {}),
+				...(Array.isArray(attributes.abbreviatedTitles) ? attributes.abbreviatedTitles : []),
+			].filter((value) => typeof value === "string" && value.trim() && value !== title);
 			return {
 				id: item.id,
 				title,
 				title_english: title,
+				titleAliases: [...new Set(titleAliases)].slice(0, 10),
 				type: attributes.subtype || "",
 				year: attributes.startDate?.slice(0, 4) || "",
 				episodeCount: Number.isInteger(attributes.episodeCount) ? attributes.episodeCount : undefined,

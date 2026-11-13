@@ -149,8 +149,11 @@ h1 { margin-bottom: 10px; font-family: "Space Grotesk", sans-serif; font-size: 5
 .details-synopsis-copy { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; white-space: pre-line; }
 .details-source { display: inline-block; margin-top: 12px; color: var(--blue); font-size: 11px; font-weight: 700; text-decoration: none; }
 .details-source:hover { text-decoration: underline; }
-.footer { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid rgba(202, 190, 218, 0.55); color: #8b8198; font-size: 8px; font-weight: 700; letter-spacing: 0.8px; }
+.footer { min-height: 66px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid rgba(202, 190, 218, 0.55); color: #8b8198; font-size: 8px; font-weight: 700; letter-spacing: 0.8px; }
 .storage-info { display: flex; align-items: center; gap: 12px; }
+.tmdb-attribution { order: 3; width: 100%; display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 9px; font-weight: 500; letter-spacing: 0; }
+.tmdb-attribution a { display: inline-flex; flex: 0 0 auto; }
+.tmdb-attribution img { display: block; width: 32px; height: 32px; }
 #sync-status[data-state="error"] { color: var(--orange-dark); }
 #sync-status[data-state="success"] { color: var(--green); }
 .import-button { padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); cursor: pointer; font-size: 10px; font-weight: 600; letter-spacing: 0; }

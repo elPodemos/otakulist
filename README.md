@@ -1,6 +1,18 @@
 # OtakuList
 
-Application statique pour organiser et consulter des listes d'animes. La recherche de titres utilise l'API Kitsu et les synopsis sont traduits en français via MyMemory ; les listes et comptes sont gérés par Supabase.
+Application statique pour organiser et consulter des listes d'animes. Kitsu fournit la recherche et les données anime; TMDB complète les titres et synopsis français lorsqu'ils sont disponibles. MyMemory reste un recours pour traduire les synopsis manquants. Les listes et comptes sont gérés par Supabase.
+
+## Données anime en français
+
+La recherche, les affiches, les épisodes et les métadonnées anime restent fournis par Kitsu. Lorsqu'une fiche française correspondante existe sur TMDB, une fonction Supabase récupère son titre et son synopsis français. Si TMDB ne propose pas de traduction, OtakuList essaie MyMemory; en cas d'échec, le synopsis original est conservé.
+
+Pour activer TMDB en production :
+
+1. Obtenez un **API Read Access Token** dans les paramètres développeur TMDB.
+2. Dans Supabase, ajoutez-le comme secret de fonction sous le nom `TMDB_ACCESS_TOKEN` (ne le mettez pas dans `config.js` ni dans GitHub).
+3. Déployez la fonction avec la CLI Supabase : `supabase functions deploy tmdb-localize --project-ref xtbxeperselrienqqogh`. Le fichier `supabase/config.toml` désactive la vérification JWT pour cette fonction, nécessaire à la consultation publique; ses origines CORS sont limitées à GitHub Pages et aux serveurs de développement usuels.
+
+La fonction valide les titres, limite les demandes par instance et garde les réponses en cache. Les traductions TMDB restent dépendantes des contributions disponibles dans la base. Le pied de page affiche l'attribution et le logo TMDB requis par ses conditions d'utilisation. L'icône locale provient de [Simple Icons](https://simpleicons.org/) (CC0).
 
 ## Comptes et listes
 
